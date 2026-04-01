@@ -386,6 +386,10 @@ Bootstrap behavior:
 
 All agents use the same connection pattern: a remote MCP server pointing to `PLAYWRIGHT_MCP_URL`. The config key and format differ per tool.
 
+### OpenCode
+
+Add to `~/.config/opencode/opencode.json` (or a project-level `opencode.json`):
+
 ```json
 {
   "mcp": {
@@ -397,13 +401,23 @@ All agents use the same connection pattern: a remote MCP server pointing to `PLA
 }
 ```
 
-| Agent | Config file | Key |
-|---|---|---|
-| OpenCode | `~/.config/opencode/opencode.json` or project-level `opencode.json` | `mcp` |
-| Claude Code | `~/.claude/mcp.json` | `mcpServers` with `"transport": "http"` |
-| Others | Search settings for `MCP`, `mcpServers`, `remote MCP`, `HTTP transport`, or `SSE transport` | varies |
+### Claude Code
 
-For agents that require an explicit SSE path, append `/sse` to the URL: `http://127.0.0.1:8931/sse`.
+Use the CLI — it writes to `~/.claude.json` automatically:
+
+```bash
+claude mcp add --transport http shared-browser http://localhost:8931
+```
+
+Verify with:
+
+```bash
+claude mcp list
+```
+
+### Others
+
+Search settings for `MCP`, `mcpServers`, `remote MCP`, `HTTP transport`, or `SSE transport`. Use `http://localhost:8931` as the URL. For agents that require an explicit SSE path, append `/sse`: `http://localhost:8931/sse`.
 
 Use the server name `shared-browser` consistently across all tools.
 
