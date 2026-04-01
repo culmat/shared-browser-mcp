@@ -2,7 +2,7 @@
 
 You (the human 😉), one Playwright MCP server, multiple coding agents sharing the same browser session.
 
-## TL;DR (humans)
+## TL;DR
 
 - Start the dedicated Chrome shortcut when you want browser-capable AI coding.
 - Your shell silently starts a shared local Playwright MCP server in the background if none is running.
