@@ -69,10 +69,12 @@ The sample **values** (ports, paths) are defaults; implementing agents must chec
 PLAYWRIGHT_CDP_URL="http://127.0.0.1:9223"   # Chromium DevTools Protocol endpoint
 PLAYWRIGHT_MCP_HOST="127.0.0.1"
 PLAYWRIGHT_MCP_PORT="8931"                    # Playwright MCP HTTP endpoint
-PLAYWRIGHT_MCP_URL="http://127.0.0.1:8931"
+PLAYWRIGHT_MCP_URL="http://localhost:8931"
 ```
 
 `PLAYWRIGHT_CDP_URL` and `PLAYWRIGHT_MCP_URL` are different endpoints and must not be mixed.
+
+> **Note:** `PLAYWRIGHT_MCP_URL` uses `localhost` (not `127.0.0.1`). The `@playwright/mcp` server enforces a `Host` header check and only accepts requests where the `Host` header matches the bound hostname. Clients connecting via `http://127.0.0.1` send `Host: 127.0.0.1` and receive a `403 Forbidden`. Using `http://localhost` sends `Host: localhost`, which the server accepts.
 
 ## Port selection (agents)
 
@@ -320,7 +322,7 @@ Save as `~/.config/shell/playwright-mcp-bootstrap.sh`:
 export PLAYWRIGHT_CDP_URL="${PLAYWRIGHT_CDP_URL:-http://127.0.0.1:9223}"
 export PLAYWRIGHT_MCP_HOST="${PLAYWRIGHT_MCP_HOST:-127.0.0.1}"
 export PLAYWRIGHT_MCP_PORT="${PLAYWRIGHT_MCP_PORT:-8931}"
-export PLAYWRIGHT_MCP_URL="${PLAYWRIGHT_MCP_URL:-http://${PLAYWRIGHT_MCP_HOST}:${PLAYWRIGHT_MCP_PORT}}"
+export PLAYWRIGHT_MCP_URL="${PLAYWRIGHT_MCP_URL:-http://localhost:${PLAYWRIGHT_MCP_PORT}}"
 
 _pw_mcp_bootstrap_once() {
   # Double-fork: the outer subshell exits immediately after spawning the inner
@@ -389,7 +391,7 @@ All agents use the same connection pattern: a remote MCP server pointing to `PLA
   "mcp": {
     "shared-browser": {
       "type": "remote",
-      "url": "http://127.0.0.1:8931"
+      "url": "http://localhost:8931"
     }
   }
 }
@@ -416,10 +418,12 @@ Run these manually to check each layer:
 curl -s http://127.0.0.1:9223/json/version
 
 # Is the shared MCP server reachable?
-curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8931/sse
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8931/sse
 ```
 
 A `200`, `400`, or `405` from the MCP probe means the server is up. A connection refused means MCP is not running — open a new shell or start the browser first.
+
+> Use `localhost` (not `127.0.0.1`) for the MCP URL. The server enforces a `Host` header check and returns `403 Forbidden` for requests with `Host: 127.0.0.1`.
 
 ## Optional future improvements
 
