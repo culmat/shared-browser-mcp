@@ -382,24 +382,24 @@ Bootstrap behavior:
 
 ## Step 3: Configure agents
 
-All agents use the same connection pattern: an HTTP remote MCP server pointing to `PLAYWRIGHT_MCP_URL`. The config file location differs per tool.
+All agents use the same connection pattern: a remote MCP server pointing to `PLAYWRIGHT_MCP_URL`. The config key and format differ per tool.
 
 ```json
 {
-  "mcpServers": {
+  "mcp": {
     "shared-browser": {
-      "transport": "http",
+      "type": "remote",
       "url": "http://127.0.0.1:8931"
     }
   }
 }
 ```
 
-| Agent | Config file location |
-|---|---|
-| OpenCode | `~/.config/opencode/opencode.json` or project-level `opencode.json` |
-| Claude | `~/.claude/mcp.json` |
-| Others | Search settings for `MCP`, `mcpServers`, `remote MCP`, `HTTP transport`, or `SSE transport` |
+| Agent | Config file | Key |
+|---|---|---|
+| OpenCode | `~/.config/opencode/opencode.json` or project-level `opencode.json` | `mcp` |
+| Claude Code | `~/.claude/mcp.json` | `mcpServers` with `"transport": "http"` |
+| Others | Search settings for `MCP`, `mcpServers`, `remote MCP`, `HTTP transport`, or `SSE transport` | varies |
 
 For agents that require an explicit SSE path, append `/sse` to the URL: `http://127.0.0.1:8931/sse`.
 
