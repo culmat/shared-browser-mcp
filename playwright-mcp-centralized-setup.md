@@ -426,3 +426,7 @@ A `200`, `400`, or `405` from the MCP probe means the server is up. A connection
 - Add a `pw-mcp-restart` shell function for explicit manual recovery.
 - Add a `pw-mcp-status` shell function for quick diagnostics.
 - Add a project-level note (e.g. in `AGENTS.md`) instructing agents to use `shared-browser` rather than launching their own MCP server.
+
+---
+
+♡ Copying is an act of love. Please copy and share. [copyheart.org](https://copyheart.org/)
