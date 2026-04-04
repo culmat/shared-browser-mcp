@@ -362,6 +362,50 @@ chmod +x "$HOME/.config/playwright-mcp/start-mcp.sh"
 
 ### macOS (`launchd`)
 
+macOS System Settings → General → Login Items shows background items by process name. If launchd runs the shell script directly via `/bin/bash`, the entry appears as **"bash — item from unidentified developer"**. To get a readable name, compile a small named stub that launchd tracks as the long-lived parent process:
+
+```bash
+cat > /tmp/playwright-mcp-service.c << 'EOF'
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/wait.h>
+#include <signal.h>
+
+static volatile int running = 1;
+static void on_sig(int s) { (void)s; running = 0; }
+
+int main(void) {
+    const char *home = getenv("HOME");
+    if (!home) { fprintf(stderr, "HOME not set\n"); return 1; }
+
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/.config/playwright-mcp/start-mcp.sh", home);
+
+    signal(SIGTERM, on_sig);
+    signal(SIGINT,  on_sig);
+
+    while (running) {
+        pid_t pid = fork();
+        if (pid < 0) { perror("fork"); return 1; }
+        if (pid == 0) {
+            execl("/bin/bash", "bash", "-l", path, (char *)NULL);
+            perror("execl");
+            _exit(1);
+        }
+        int status;
+        waitpid(pid, &status, 0);
+        if (!running) break;
+        sleep(1);
+    }
+    return 0;
+}
+EOF
+cc -o "$HOME/.config/playwright-mcp/playwright-mcp-service" /tmp/playwright-mcp-service.c
+```
+
+This stub forks the shell script as a child and stays alive as the named parent process. launchd watches the stub (`playwright-mcp-service`), and Login Items shows that name instead of "bash".
+
 Save as `~/Library/LaunchAgents/local.playwright-mcp.plist`:
 
 ```xml
@@ -372,11 +416,12 @@ Save as `~/Library/LaunchAgents/local.playwright-mcp.plist`:
     <key>Label</key>
     <string>local.playwright-mcp</string>
 
+    <key>Program</key>
+    <string>/Users/YOUR_USERNAME/.config/playwright-mcp/playwright-mcp-service</string>
+
     <key>ProgramArguments</key>
     <array>
-      <string>/bin/bash</string>
-      <string>-lc</string>
-      <string>$HOME/.config/playwright-mcp/start-mcp.sh</string>
+      <string>playwright-mcp-service</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -393,6 +438,8 @@ Save as `~/Library/LaunchAgents/local.playwright-mcp.plist`:
   </dict>
 </plist>
 ```
+
+Replace `YOUR_USERNAME` with your actual username (the `Program` key does not expand `$HOME`).
 
 Load and start:
 
