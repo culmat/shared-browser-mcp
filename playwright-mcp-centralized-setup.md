@@ -25,11 +25,20 @@ Before acting on these instructions, agents must:
    flag, or package name no longer works as documented, it should:
    - Work around the issue and complete the setup.
    - Summarise the discrepancy clearly for the user.
-   - If `gh` is available, offer to open an edit on the gist:
-       gh api --method PATCH gists/fc0f2f9ed229b473f56dfa44e2dfa312 \
-         -f "files[playwright-mcp-centralized-setup.md][content]=<updated content>"
-     Ask the user to confirm before pushing any change to the gist.
+   - Offer to update the document. Ask the user to confirm before making any
+     change.
+
+4. When updating this document, always edit the local file, commit, and push
+   via git — do NOT use `gh api --method PATCH` to update the gist directly.
+   The GitHub API creates anonymous commits on the gist's git remote that
+   diverge from the local git history, requiring a force-push or manual rebase
+   to reconcile. The correct workflow is:
+
+       git add playwright-mcp-centralized-setup.md
+       git commit -m "<description>"
+       git push
 -->
+
 
 You (the human 😉), one Playwright MCP server, multiple coding agents sharing the same browser session.
 
