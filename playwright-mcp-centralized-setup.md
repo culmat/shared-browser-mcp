@@ -36,29 +36,29 @@ You (the human 😉), one Playwright MCP server, multiple coding agents sharing 
 ## TL;DR
 
 - Start the dedicated browser shortcut when you want browser-capable AI coding.
-- Your shell silently starts a shared local Playwright MCP server in the background if none is running.
+- A user-level service manager keeps a shared local Playwright MCP server running in the background.
 - All agents connect to the same live browser session — they can see and affect each other's state.
 
 ## Rules and tradeoffs
 
 - You and all connected agents share the same live browser session: navigation, logins -sic- , and page state.
 - Use the dedicated browser profile for AI/browser automation work and interaction.
-- Startup is silent and best-effort. If the browser is not running when your shell starts, the MCP server may not come up until the browser is launched and a new shell is opened.
+- The browser is started manually when needed; MCP runs continuously in the background and reconnects when the browser reappears.
 - Agents attach to the shared endpoint — they do not manage the MCP process lifecycle.
 
 ## Scope
 
 - Platforms: macOS + `bash`/`zsh`, Windows + WSL (`bash`), Linux GNOME + `bash`
-- No PowerShell, no service managers (`launchd`, `systemd --user`, etc.)
+- Service manager required for always-on MCP: `launchd` (macOS), `systemd --user` (Linux/WSL), or Windows Task Scheduler (WSL fallback)
 - Preferred launcher: `bunx`; fallback: `npx`
 - Requires any Chromium-based browser (Google Chrome, Chromium, Microsoft Edge, Brave, Helium, Arc, Vivaldi, …)
 
 ## Flow
 
-1. You start a Chromium-based browser from a desktop shortcut using a dedicated profile and a fixed CDP port.
-2. Each interactive shell start schedules a fully detached background probe — the shell does not wait for it.
-3. If the shared MCP server is not reachable, the probe starts one instance in the background.
-4. Agents connect to the shared MCP HTTP endpoint and do not spawn their own MCP processes.
+1. A user-level service starts at login and keeps one shared MCP runtime alive.
+2. You start a Chromium-based browser manually from a desktop shortcut using a dedicated profile and a fixed CDP port.
+3. When the browser is closed, MCP stays up in a degraded/waiting state and keeps retrying CDP attach.
+4. When the browser is reopened, MCP automatically reattaches; agents continue using the same shared HTTP endpoint.
 
 ## Shared runtime variables
 
@@ -204,7 +204,7 @@ After installation, re-detect before writing the shortcut.
 "<path\to\browser.exe>" --user-data-dir="%LOCALAPPDATA%\PlaywrightMCP\browser-profile" --remote-debugging-port=9223 --new-window about:blank
 ```
 
-Launch this shortcut before or during a coding session. The WSL shell bootstrap is silent and best-effort.
+Launch this shortcut before or during a coding session. Browser startup stays manual; MCP lifecycle is managed separately by a background service.
 
 ### Linux GNOME — `.desktop` entry
 
@@ -312,75 +312,149 @@ Same as macOS — the profile path and Python snippet are identical. Run it from
 
 If you change the theme interactively inside the browser and want to restore the chosen color, quit the browser and re-run the script above.
 
-## Step 2: Shell bootstrap
+## Step 2: Service-managed MCP (always on, browser stays manual)
 
-Save as `~/.config/shell/playwright-mcp-bootstrap.sh`:
+Create a wrapper script that keeps trying until the browser is available, and restarts MCP whenever it exits.
+
+Save as `~/.config/playwright-mcp/start-mcp.sh`:
 
 ```bash
-# Shared Playwright MCP bootstrap — silent, detached, best-effort
+#!/usr/bin/env bash
+set -u
 
 export PLAYWRIGHT_CDP_URL="${PLAYWRIGHT_CDP_URL:-http://127.0.0.1:9223}"
 export PLAYWRIGHT_MCP_HOST="${PLAYWRIGHT_MCP_HOST:-127.0.0.1}"
 export PLAYWRIGHT_MCP_PORT="${PLAYWRIGHT_MCP_PORT:-8931}"
 export PLAYWRIGHT_MCP_URL="${PLAYWRIGHT_MCP_URL:-http://localhost:${PLAYWRIGHT_MCP_PORT}}"
 
-_pw_mcp_bootstrap_once() {
-  # Double-fork: the outer subshell exits immediately after spawning the inner
-  # background job, so bash never adds the job to the interactive job table and
-  # never prints a "Done" completion notice at the next prompt.
-  (
-    (
-      # Prevent concurrent launches when multiple shells open at once.
-      lock_dir="${TMPDIR:-/tmp}/pw-mcp-bootstrap.lock"
-      mkdir "$lock_dir" 2>/dev/null || exit 0
-      trap 'rmdir "$lock_dir" >/dev/null 2>&1' EXIT INT TERM
-
-      # Probe the SSE transport endpoint; a 200 or 405 both mean the server is up.
-      status=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 1 "${PLAYWRIGHT_MCP_URL}/sse" 2>/dev/null)
-      case "$status" in
-        200|400|405) exit 0 ;;
-      esac
-
-      if command -v bunx >/dev/null 2>&1; then
-        launcher="bunx"
-      elif command -v npx >/dev/null 2>&1; then
-        launcher="npx"
-      else
-        exit 0
-      fi
-
-      nohup "$launcher" -y @playwright/mcp@latest \
-        --cdp-endpoint "$PLAYWRIGHT_CDP_URL" \
-        --host "$PLAYWRIGHT_MCP_HOST" \
-        --port "$PLAYWRIGHT_MCP_PORT" \
-        --caps devtools \
-        --shared-browser-context \
-        >/dev/null 2>&1 &
-    ) >/dev/null 2>&1 &
-  )
-}
-
-# Run only in interactive shells.
-if [ -n "${BASH_VERSION:-}" ]; then
-  case "$-" in *i*) _pw_mcp_bootstrap_once ;; esac
-elif [ -n "${ZSH_VERSION:-}" ]; then
-  [[ -o interactive ]] && _pw_mcp_bootstrap_once
+if command -v bunx >/dev/null 2>&1; then
+  launcher="bunx"
+elif command -v npx >/dev/null 2>&1; then
+  launcher="npx"
+else
+  echo "Neither bunx nor npx found" >&2
+  exit 1
 fi
+
+while true; do
+  # Wait for browser CDP to exist before starting MCP.
+  until curl -sS -o /dev/null --max-time 1 "${PLAYWRIGHT_CDP_URL}/json/version"; do
+    sleep 1
+  done
+
+  "$launcher" -y @playwright/mcp@latest \
+    --cdp-endpoint "$PLAYWRIGHT_CDP_URL" \
+    --host "$PLAYWRIGHT_MCP_HOST" \
+    --port "$PLAYWRIGHT_MCP_PORT" \
+    --caps devtools \
+    --shared-browser-context
+
+  # If MCP exits (for example browser closed), loop and wait for CDP again.
+  sleep 1
+done
 ```
 
-Source it from your shell init:
+Make it executable:
 
 ```bash
-# Add to ~/.bashrc and/or ~/.zshrc
-[ -f "$HOME/.config/shell/playwright-mcp-bootstrap.sh" ] && \
-  . "$HOME/.config/shell/playwright-mcp-bootstrap.sh"
+chmod +x "$HOME/.config/playwright-mcp/start-mcp.sh"
 ```
 
-Bootstrap behavior:
-- Fully asynchronous — the shell does not wait for the probe or MCP startup.
-- Silent on success and failure — no "Done" job-completion notice at the next prompt.
-- Double-fork pattern ensures the background job is never tracked in the interactive shell's job table.
-- Lock directory prevents duplicate launches when multiple terminals open simultaneously.
+### macOS (`launchd`)
+
+Save as `~/Library/LaunchAgents/local.playwright-mcp.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>local.playwright-mcp</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/bin/bash</string>
+      <string>-lc</string>
+      <string>$HOME/.config/playwright-mcp/start-mcp.sh</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/playwright-mcp.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/playwright-mcp.err.log</string>
+  </dict>
+</plist>
+```
+
+Load and start:
+
+```bash
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/local.playwright-mcp.plist"
+launchctl enable "gui/$(id -u)/local.playwright-mcp"
+launchctl kickstart -k "gui/$(id -u)/local.playwright-mcp"
+```
+
+### Linux (`systemd --user`)
+
+Save as `~/.config/systemd/user/playwright-mcp.service`:
+
+```ini
+[Unit]
+Description=Shared Playwright MCP
+After=network.target
+
+[Service]
+Type=simple
+Environment=PLAYWRIGHT_CDP_URL=http://127.0.0.1:9223
+Environment=PLAYWRIGHT_MCP_HOST=127.0.0.1
+Environment=PLAYWRIGHT_MCP_PORT=8931
+Environment=PLAYWRIGHT_MCP_URL=http://localhost:8931
+ExecStart=%h/.config/playwright-mcp/start-mcp.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+Enable and start:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now playwright-mcp.service
+```
+
+### Windows + WSL
+
+Preferred path: if your WSL distro has `systemd --user` enabled, use the Linux section above directly inside WSL.
+
+Fallback path: if `systemd --user` is unavailable in WSL, use a Windows logon task to launch the same wrapper script in WSL.
+
+Create the task from Windows `cmd.exe` (replace `<DistroName>` and `<LinuxUser>`):
+
+```cmd
+schtasks /Create /SC ONLOGON /TN PlaywrightMCP /TR "wsl.exe -d <DistroName> --user <LinuxUser> bash -lc '~/.config/playwright-mcp/start-mcp.sh'" /F
+```
+
+Run once now without waiting for next login:
+
+```cmd
+schtasks /Run /TN PlaywrightMCP
+```
+
+Service behavior:
+- Starts automatically at login and keeps MCP available for agents.
+- Never auto-launches the browser; browser remains manual via your shortcut.
+- If browser closes, service stays up and keeps retrying.
+- When browser restarts later, MCP reconnects automatically without manual intervention.
 
 ## Step 3: Configure agents
 
@@ -435,14 +509,52 @@ curl -s http://127.0.0.1:9223/json/version
 curl -s -o /dev/null -w "%{http_code}" http://localhost:8931/sse
 ```
 
-A `200`, `400`, or `405` from the MCP probe means the server is up. A connection refused means MCP is not running — open a new shell or start the browser first.
+A `200`, `400`, or `405` from the MCP probe means MCP is reachable.
+
+Check service health:
+
+```bash
+# macOS
+launchctl print "gui/$(id -u)/local.playwright-mcp" | grep -E "state =|last exit code"
+
+# Linux
+systemctl --user is-active playwright-mcp.service
+systemctl --user --no-pager status playwright-mcp.service
+
+# Windows (from cmd.exe)
+schtasks /Query /TN PlaywrightMCP
+```
+
+Expected reconnect behavior:
+- If browser is closed, MCP may become temporarily degraded, but the service remains active.
+- If browser is relaunched from the shortcut, MCP reconnects automatically.
+- If MCP process crashes, service manager restarts it automatically.
 
 > Use `localhost` (not `127.0.0.1`) for the MCP URL. The server enforces a `Host` header check and returns `403 Forbidden` for requests with `Host: 127.0.0.1`.
 
+## Upgrading from shell-bootstrap approach
+
+Earlier versions of this setup sourced a bootstrap script from `.bashrc` / `.zshrc` that launched MCP on-demand from interactive shell sessions. This is superseded by the service-manager approach in Step 2.
+
+If you have a line like this in your shell config:
+
+```bash
+[ -f "$HOME/.config/shell/playwright-mcp-bootstrap.sh" ] && \
+  . "$HOME/.config/shell/playwright-mcp-bootstrap.sh"
+```
+
+Remove it, then delete the script itself:
+
+```bash
+rm ~/.config/shell/playwright-mcp-bootstrap.sh
+```
+
+The launchd / systemd / Task Scheduler service installed in Step 2 handles the full MCP lifecycle — no shell-session bootstrapping is needed.
+
 ## Optional future improvements
 
-- Add a `pw-mcp-restart` shell function for explicit manual recovery.
-- Add a `pw-mcp-status` shell function for quick diagnostics.
+- Add a `pw-mcp-restart` helper for explicit manual recovery.
+- Add a `pw-mcp-status` helper that reports `browser=up/down`, `mcp=healthy/degraded/down`, and `service=active/inactive`.
 - Add a project-level note (e.g. in `AGENTS.md`) instructing agents to use `shared-browser` rather than launching their own MCP server.
 
 ---
