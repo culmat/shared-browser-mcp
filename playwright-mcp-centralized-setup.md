@@ -48,6 +48,14 @@ You (the human 😉), one Playwright MCP server, multiple coding agents sharing 
 - A user-level service manager keeps a shared local Playwright MCP server running in the background.
 - All agents connect to the same live browser session — they can see and affect each other's state.
 
+### Quick apply
+
+If you already trust this guide and just want an agent to apply it on your machine, tell the agent:
+
+```text
+apply https://gist.githubusercontent.com/culmat/fc0f2f9ed229b473f56dfa44e2dfa312/raw/playwright-mcp-centralized-setup.md to this machine
+```
+
 ## Rules and tradeoffs
 
 - You and all connected agents share the same live browser session: navigation, logins -sic- , and page state.
@@ -553,7 +561,69 @@ Use the server name `shared-browser` consistently across all tools.
 
 Agents must not launch their own Playwright MCP process — disable any per-agent auto-start for this server if that option exists.
 
+## Step 4: Smart self-healing + short errors (agent implementation contract)
+
+When an agent/client fails to connect to `shared-browser`, use this runtime behavior.
+
+### Error format
+
+Use only these short forms:
+
+- `cannot connect to <url>. <next thing to try>`
+- `config fixed to <url>. reconnect MCP or restart me.`
+
+Do not prepend labels like `shared-browser SSE error:`.
+
+### Connection + self-heal order
+
+1. Try the configured URL as-is.
+2. If host is `127.0.0.1` or `[::1]`, try the same URL with `localhost`.
+3. Toggle SSE path once (add `/sse` if missing, or remove it if present).
+4. Keep the final failure URL in the message as the last attempted URL.
+
+### Config safety rules
+
+- Persist config changes only when a fallback URL actually connects and is strictly better than the original.
+- If all attempts fail, leave config exactly as it was found.
+
+### Health endpoint (recommended)
+
+Add a local health endpoint exposed by the shared MCP wrapper/supervisor process (for example `http://localhost:8932/health`).
+
+Minimal JSON contract:
+
+```json
+{
+  "mcp": "up",
+  "browser": "up",
+  "configuredUrl": "http://localhost:8931/sse",
+  "recommendedUrl": "http://localhost:8931/sse",
+  "serviceStartCommand": "systemctl --user start playwright-mcp.service"
+}
+```
+
+Required semantics:
+
+- `mcp`: whether shared MCP process/supervisor is alive.
+- `browser`: whether CDP probe (`PLAYWRIGHT_CDP_URL/json/version`) is reachable.
+- `recommendedUrl`: omit or set equal to `configuredUrl` when no URL correction is needed.
+- `serviceStartCommand`: platform-appropriate start command for this machine.
+
+### Choosing `<next thing to try>`
+
+- If config was auto-fixed and works: return `config fixed to <url>. reconnect MCP or restart me.`
+- If MCP is down and browser is up: `run: <serviceStartCommand>`
+- If browser is down: `launch the browser from the desktop shortcut`
+- If MCP is up but URL is wrong and auto-fix did not persist: `reconfigure shared-browser to <recommendedUrl>`
+
+When no health endpoint is available, infer state from direct probes:
+
+- Browser probe: `http://127.0.0.1:9223/json/version`
+- MCP probe: configured URL and one `/sse` variant
+
 ## Troubleshooting
+
+Client implementations should first follow Step 4 (`Smart self-healing + short errors`) and only fall back to these manual checks when automatic diagnosis/recovery does not resolve the issue.
 
 Run these manually to check each layer:
 
@@ -586,7 +656,7 @@ Expected reconnect behavior:
 - If browser is relaunched from the shortcut, MCP reconnects automatically.
 - If MCP process crashes, service manager restarts it automatically.
 
-> Use `localhost` (not `127.0.0.1`) for the MCP URL. The server enforces a `Host` header check and returns `403 Forbidden` for requests with `Host: 127.0.0.1`.
+> `localhost` vs `127.0.0.1`: Step 4 already requires trying `localhost` automatically and persisting only successful fixes. Keep this note for manual diagnosis and legacy clients.
 
 ## Upgrading from shell-bootstrap approach
 
@@ -611,6 +681,7 @@ The launchd / systemd / Task Scheduler service installed in Step 2 handles the f
 
 - Add a `pw-mcp-restart` helper for explicit manual recovery.
 - Add a `pw-mcp-status` helper that reports `browser=up/down`, `mcp=healthy/degraded/down`, and `service=active/inactive`.
+- Add a tiny health endpoint service (or supervisor-integrated `/health`) returning `mcp`, `browser`, `recommendedUrl`, and `serviceStartCommand` for smarter client messages.
 - Add a project-level note (e.g. in `AGENTS.md`) instructing agents to use `shared-browser` rather than launching their own MCP server.
 
 ---
