@@ -53,7 +53,7 @@ You (the human 😉), one Playwright MCP server, multiple coding agents sharing 
 If you already trust this guide and just want an agent to apply it on your machine, tell the agent:
 
 ```text
-apply https://gist.githubusercontent.com/culmat/fc0f2f9ed229b473f56dfa44e2dfa312/raw/playwright-mcp-centralized-setup.md to this machine
+check my exsting Shared Chromium + Playwright MCP Setup against the document and update or install. see https://gist.githubusercontent.com/culmat/fc0f2f9ed229b473f56dfa44e2dfa312/raw/playwright-mcp-centralized-setup.md
 ```
 
 ## Rules and tradeoffs
