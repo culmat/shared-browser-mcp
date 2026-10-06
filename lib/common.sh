@@ -108,9 +108,10 @@ def load(p):
     try: return json.loads(p.read_text(encoding="utf-8"))
     except FileNotFoundError: return {}
 prefs, state = load(prefs_p), load(state_p)
+# Chrome drops preferences that equal their default; 5 (new tab page) is the default, so absent == 5.
 want = {
   "profile-name":  (prefs.get("profile", {}).get("name"), name),
-  "startup":       (prefs.get("session", {}).get("restore_on_startup"), 5),
+  "startup":       (prefs.get("session", {}).get("restore_on_startup", 5), 5),
   "theme":         (prefs.get("browser", {}).get("theme", {}).get("user_color2"), color),
 }
 if mode == "check":
