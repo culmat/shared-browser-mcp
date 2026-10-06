@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+# shared-browser-mcp — one shared browser + one Playwright MCP server for all your coding agents.
+#
+#   shared-browser-mcp check               compare this machine with the spec, exit 1 on drift
+#   shared-browser-mcp install [--restart-service]
+#                                          make it so (idempotent; only touches what check flags)
+#   shared-browser-mcp status              browser / mcp / service / pending updates, one screen
+#   shared-browser-mcp update              git pull this repo, then install
+#   shared-browser-mcp check-updates [--stage] [--notify]
+#                                          look for newer Chrome for Testing / @playwright/mcp / repo
+#   shared-browser-mcp activate-staged     switch to a staged Chrome for Testing (browser must be closed)
+#   shared-browser-mcp install-extensions  one-click install of the Web Store IDs in PLAYWRIGHT_MCP_EXTENSIONS
+#
+# Machine-specific values go in ~/.config/playwright-mcp/local.env (never in this repo).
+set -u
+
+resolve() { local p=$1; while [ -L "$p" ]; do p=$(readlink "$p"); done; cd "$(dirname "$p")" && pwd; }
+SBM_ROOT=$(resolve "$0")
+# shellcheck disable=SC1091
+. "$SBM_ROOT/lib/common.sh"
+
+PLATFORM=$(sbm_platform)
+[ -f "$SBM_ROOT/lib/$PLATFORM.sh" ] || die "unsupported platform: $(uname -s)"
+# shellcheck disable=SC1090
+. "$SBM_ROOT/lib/$PLATFORM.sh"
+
+service_unit_content() { cat "$SBM_ROOT/service/playwright-mcp.service"; }
+
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+# ---------------------------------------------------------------- check
+cmd_check() {
+  plat_init
+  log "platform: $PLATFORM   config: $SBM_CONFIG_DIR   spec: $SBM_ROOT ($(git -C "$SBM_ROOT" rev-parse --short HEAD 2>/dev/null || echo no-git))"
+
+  # Chrome for Testing
+  local cur legacy
+  cur=$(plat_cft_current_version || true)
+  legacy=$(plat_cft_legacy_version || true)
+  if [ -n "$cur" ]; then report OK chrome "Chrome for Testing $cur (current)"
+  elif [ -n "$legacy" ]; then report DRIFT chrome "unversioned install ($legacy); install will move it to a versioned folder"
+  elif [ -n "$(plat_cft_versions)" ]; then report DRIFT chrome "installed ($(plat_cft_versions | tr '\n' ' ')) but nothing is 'current'"
+  else report MISSING chrome "Chrome for Testing not installed under $CFT_ROOT"
+  fi
+
+  # profile
+  if [ -d "$PROFILE_DIR" ]; then
+    while read -r st name detail; do report "$st" "$name" "$detail"; done < <(prefs_tool check "$PROFILE_DIR")
+    local id
+    for id in $PLAYWRIGHT_MCP_EXTENSIONS; do
+      if extension_installed "$PROFILE_DIR" "$id"; then report OK "extension" "$id"
+      else report DRIFT "extension" "$id not installed (run: shared-browser-mcp install-extensions)"; fi
+    done
+  else
+    report MISSING profile "$PROFILE_DIR (created on first browser start)"
+  fi
+
+  plat_launcher_check
+
+  # supervisor + service
+  if [ ! -f "$SBM_CONFIG_DIR/start-mcp.sh" ]; then report MISSING supervisor "$SBM_CONFIG_DIR/start-mcp.sh"
+  elif ! diff -q "$SBM_CONFIG_DIR/start-mcp.sh" "$SBM_ROOT/service/start-mcp.sh" >/dev/null; then report DRIFT supervisor "start-mcp.sh differs from repo version"
+  else report OK supervisor "$SBM_CONFIG_DIR/start-mcp.sh"; fi
+  [ "$(cat "$SBM_CONFIG_DIR/repo-path" 2>/dev/null)" = "$SBM_ROOT" ] && report OK repo-path "$SBM_ROOT" || report DRIFT repo-path "supervisor does not know this checkout"
+  plat_service_check
+
+  # live endpoints (informational — the browser is started manually by design)
+  if cdp_up; then report INFO browser "up: $(cdp_browser) at $PLAYWRIGHT_CDP_URL"; else report INFO browser "down ($LAUNCHER_HINT)"; fi
+  if mcp_up; then report INFO mcp "up at $PLAYWRIGHT_MCP_URL (@playwright/mcp $(mcp_running_version || echo '?'))"; else report INFO mcp "down (waits for the browser; service: $(plat_service_start_command))"; fi
+
+  # agent client
+  case "$(claude_mcp_configured; echo $?)" in
+    0) report OK claude-code "$PLAYWRIGHT_MCP_SERVER_NAME -> $PLAYWRIGHT_MCP_URL" ;;
+    1) report DRIFT claude-code "$PLAYWRIGHT_MCP_SERVER_NAME not configured (user scope)" ;;
+    *) report SKIP claude-code "claude CLI not found" ;;
+  esac
+
+  [ "$SBM_DRIFT" = 0 ]
+}
+
+# ---------------------------------------------------------------- install
+cft_install_version() { # VERSION  (download + unpack into versioned folder, no activation)
+  local url zip
+  url=$(cft_download_url "$1" "$CFT_PLATFORM_KEY")
+  zip="$SBM_CONFIG_DIR/tmp/chrome-$1-$CFT_PLATFORM_KEY.zip"
+  log "downloading Chrome for Testing $1 ($CFT_PLATFORM_KEY)"
+  download "$url" "$zip"
+  mkdir -p "$CFT_ROOT"
+  plat_cft_unpack "$zip" "$1"
+  rm -f "$zip"
+}
+
+cmd_install() {
+  local restart=""
+  [ "${1:-}" = --restart-service ] && restart=restart
+  plat_init
+  mkdir -p "$SBM_CONFIG_DIR"
+
+  # Chrome for Testing: versioned folder + current pointer
+  local cur legacy stable
+  cur=$(plat_cft_current_version || true)
+  legacy=$(plat_cft_legacy_version || true)
+  if [ -z "$cur" ]; then
+    if [ -n "$legacy" ]; then
+      plat_cft_migrate_legacy "$legacy"; plat_cft_activate "$legacy"; cur=$legacy
+    elif [ -n "$(plat_cft_versions | tail -1)" ]; then
+      cur=$(plat_cft_versions | tail -1); plat_cft_activate "$cur"
+    else
+      stable=$(cft_stable_version) || die "cannot determine Chrome for Testing stable version (network/proxy?)"
+      cft_install_version "$stable"; plat_cft_activate "$stable"; cur=$stable
+    fi
+    log "Chrome for Testing $cur is current"
+  fi
+
+  # profile preferences (only while the browser is closed)
+  if [ -d "$PROFILE_DIR" ]; then
+    if prefs_tool check "$PROFILE_DIR" | grep -q '^DRIFT'; then
+      if cdp_up; then warn "profile preferences need changes but the automation browser is running; close it and re-run install"
+      else prefs_tool apply "$PROFILE_DIR" >/dev/null; log "profile preferences written (name/startup/theme)"; fi
+    fi
+  else
+    prefs_tool apply "$PROFILE_DIR" >/dev/null
+    log "profile skeleton created at $PROFILE_DIR"
+  fi
+
+  SBM_DRIFT=0; plat_launcher_check >/dev/null 2>&1
+  if [ "$SBM_DRIFT" = 1 ]; then plat_launcher_install; log "launcher written"; fi
+  SBM_DRIFT=0
+
+  # supervisor + service
+  install -m 755 "$SBM_ROOT/service/start-mcp.sh" "$SBM_CONFIG_DIR/start-mcp.sh"
+  printf '%s\n' "$SBM_ROOT" > "$SBM_CONFIG_DIR/repo-path"
+  git -C "$SBM_ROOT" rev-parse HEAD 2>/dev/null > "$SBM_CONFIG_DIR/installed-version" || true
+  plat_service_install "$restart"
+
+  # agent client
+  if [ "$(claude_mcp_configured; echo $?)" = 1 ]; then claude_mcp_install && log "claude code: $PLAYWRIGHT_MCP_SERVER_NAME added (user scope)"; fi
+
+  # extensions
+  local id missing=""
+  for id in $PLAYWRIGHT_MCP_EXTENSIONS; do extension_installed "$PROFILE_DIR" "$id" || missing="$missing $id"; done
+  if [ -n "$missing" ]; then
+    if cdp_up; then cmd_install_extensions; else log "extensions pending:$missing — start the browser, then run: shared-browser-mcp install-extensions"; fi
+  fi
+
+  log ""
+  SBM_DRIFT=0; cmd_check
+}
+
+# ---------------------------------------------------------------- extensions
+cmd_install_extensions() {
+  plat_init
+  [ -n "$PLAYWRIGHT_MCP_EXTENSIONS" ] || { log "PLAYWRIGHT_MCP_EXTENSIONS is empty (set it in $SBM_LOCAL_ENV)"; return 0; }
+  cdp_up || die "cannot connect to $PLAYWRIGHT_CDP_URL. $LAUNCHER_HINT"
+  local id i
+  for id in $PLAYWRIGHT_MCP_EXTENSIONS; do
+    extension_installed "$PROFILE_DIR" "$id" && { log "extension $id already installed"; continue; }
+    curl -sS -X PUT -o /dev/null "${PLAYWRIGHT_CDP_URL}/json/new?https://chromewebstore.google.com/detail/$id"
+    log "opened the Web Store page for $id in the automation browser — click 'Add to Chrome' there (waiting up to 5 min)"
+    for i in $(seq 1 150); do extension_installed "$PROFILE_DIR" "$id" && break; sleep 2; done
+    extension_installed "$PROFILE_DIR" "$id" && log "extension $id installed" || warn "extension $id still not installed; re-run later"
+  done
+}
+
+# ---------------------------------------------------------------- status / updates
+cmd_status() {
+  plat_init
+  if cdp_up; then echo "browser   up    $(cdp_browser)  $PLAYWRIGHT_CDP_URL"; else echo "browser   down  $LAUNCHER_HINT"; fi
+  if mcp_up; then echo "mcp       up    @playwright/mcp $(mcp_running_version || echo '?')  $PLAYWRIGHT_MCP_URL"; else echo "mcp       down  run: $(plat_service_start_command)"; fi
+  plat_service_check | sed -E 's/^(OK|DRIFT|MISSING) +service +/service   \1  /'
+  echo "chrome   $(plat_cft_current_version || echo none) current; installed: $(plat_cft_versions | tr '\n' ' ')"
+  if [ -f "$SBM_STATUS_JSON" ]; then
+    echo "updates   (checked $(status_get updatedAt))"
+    python3 - "$SBM_STATUS_JSON" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for k in ("chrome", "mcp", "repo"):
+    v = d.get(k)
+    if isinstance(v, dict):
+        flag = "UPDATE" if v.get("update") else "ok"
+        extra = f" staged" if v.get("staged") else ""
+        print(f"          {k:7} {flag:7} installed {v.get('installed')}  latest {v.get('latest')}{extra}")
+PY
+  else
+    echo "updates   never checked (run: shared-browser-mcp check-updates)"
+  fi
+}
+
+cmd_check_updates() {
+  local stage=0 notify=0
+  for a in "$@"; do case "$a" in --stage) stage=1;; --notify) notify=1;; --quiet) SBM_QUIET=1;; esac; done
+  plat_init
+  local cur stable mcp_run mcp_latest local_rev remote_rev msg=""
+  cur=$(plat_cft_current_version || true); stable=$(cft_stable_version 2>/dev/null || true)
+  mcp_run=$(mcp_running_version || true); mcp_latest=$(mcp_latest_version || true)
+  local_rev=$(git -C "$SBM_ROOT" rev-parse HEAD 2>/dev/null || true)
+  remote_rev=$(git -C "$SBM_ROOT" ls-remote origin HEAD 2>/dev/null | cut -f1 || true)
+
+  local chrome_update=false mcp_update=false repo_update=false staged=""
+  [ -n "$cur" ] && [ -n "$stable" ] && ver_gt "$stable" "$cur" && chrome_update=true
+  [ -n "$mcp_run" ] && [ -n "$mcp_latest" ] && ver_gt "$mcp_latest" "$mcp_run" && mcp_update=true
+  [ -n "$local_rev" ] && [ -n "$remote_rev" ] && [ "$local_rev" != "$remote_rev" ] && repo_update=true
+
+  if [ "$chrome_update" = true ]; then
+    msg="Chrome for Testing $stable available (installed $cur)."
+    if [ "$stage" = 1 ] && [ "$PLAYWRIGHT_MCP_AUTO_UPDATE_BROWSER" = 1 ]; then
+      if [ -d "$CFT_ROOT/$stable" ]; then staged=$stable
+      elif command -v flock >/dev/null 2>&1; then
+        ( flock -n 9 || exit 1; cft_install_version "$stable" ) 9>"$SBM_CONFIG_DIR/.stage.lock" && staged=$stable
+      else
+        cft_install_version "$stable" && staged=$stable
+      fi
+      [ -n "$staged" ] && msg="$msg Staged; it becomes active the next time the browser is closed."
+    fi
+  fi
+  [ "$mcp_update" = true ] && msg="$msg @playwright/mcp $mcp_latest available (running $mcp_run); it updates when MCP restarts."
+  [ "$repo_update" = true ] && msg="$msg shared-browser-mcp has new commits; run: shared-browser-mcp update."
+
+  status_write \
+    "chrome={\"installed\":\"$cur\",\"latest\":\"$stable\",\"update\":$chrome_update,\"staged\":\"$staged\"}" \
+    "mcp={\"installed\":\"$mcp_run\",\"latest\":\"$mcp_latest\",\"update\":$mcp_update}" \
+    "repo={\"installed\":\"${local_rev:0:7}\",\"latest\":\"${remote_rev:0:7}\",\"update\":$repo_update}" \
+    "serviceStartCommand=\"$(plat_service_start_command)\"" \
+    "configuredUrl=\"$PLAYWRIGHT_MCP_URL\""
+
+  if [ -n "$msg" ]; then
+    log "$msg"
+    if [ "$notify" = 1 ] && [ "$(status_get notifiedFor)" != "$stable|$mcp_latest|$remote_rev" ]; then
+      plat_notify "Shared Browser MCP: updates" "$msg"
+      status_write "notifiedFor=\"$stable|$mcp_latest|$remote_rev\""
+    fi
+  else
+    log "everything up to date (chrome $cur, @playwright/mcp ${mcp_run:-not running}, repo ${local_rev:0:7})"
+  fi
+}
+
+cmd_activate_staged() {
+  for a in "$@"; do case "$a" in --quiet) SBM_QUIET=1;; esac; done
+  plat_init
+  local staged cur
+  staged=$(status_get chrome.staged)
+  [ -n "$staged" ] && [ -d "$CFT_ROOT/$staged" ] || return 0
+  cur=$(plat_cft_current_version || true)
+  [ "$staged" = "$cur" ] && return 0
+  cdp_up && { log "browser running; staged $staged waits"; return 0; }
+  plat_cft_activate "$staged"
+  log "Chrome for Testing $staged is now current (was $cur)"
+  status_write "chrome={\"installed\":\"$staged\",\"latest\":\"$staged\",\"update\":false,\"staged\":\"\"}"
+  case " $* " in *" --notify "*) plat_notify "Shared Browser MCP" "Chrome for Testing updated to $staged (previous $cur kept for rollback)";; esac
+  # keep one previous version for rollback, prune the rest
+  plat_cft_versions | grep -v -e "^$staged$" -e "^$cur$" | while read -r v; do rm -rf "${CFT_ROOT:?}/$v"; done
+}
+
+cmd_update() {
+  git -C "$SBM_ROOT" pull --ff-only || die "git pull failed in $SBM_ROOT"
+  cmd_install "$@"
+}
+
+# ---------------------------------------------------------------- dispatch
+case "${1:-}" in
+  check)              shift; cmd_check "$@" ;;
+  install)            shift; cmd_install "$@" ;;
+  status)             shift; cmd_status "$@" ;;
+  update)             shift; cmd_update "$@" ;;
+  check-updates)      shift; cmd_check_updates "$@" ;;
+  activate-staged)    shift; cmd_activate_staged "$@" ;;
+  install-extensions) shift; cmd_install_extensions "$@" ;;
+  -h|--help|help|"")  usage ;;
+  *) warn "unknown command: $1"; usage 1 ;;
+esac

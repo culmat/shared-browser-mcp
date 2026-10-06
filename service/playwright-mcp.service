@@ -1,0 +1,13 @@
+[Unit]
+Description=Shared Playwright MCP
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.config/playwright-mcp/start-mcp.sh
+Restart=always
+RestartSec=2
+KillMode=control-group
+
+[Install]
+WantedBy=default.target
