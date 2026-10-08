@@ -26,7 +26,7 @@ plat_cft_unpack() { # ZIP VERSION
 }
 plat_cft_activate() { [ -d "$CFT_ROOT/$1/Google Chrome for Testing.app" ] || die "no app bundle in $CFT_ROOT/$1"; ln -sfn "$CFT_ROOT/$1" "$CFT_ROOT/current"; }
 
-launcher_script() { printf 'do shell script "open -na %s --args %s"\n' "$(printf '%q' "$CFT_APP")" "$LAUNCHER_ARGS"; }
+launcher_script() { printf 'do shell script "open -na " & quoted form of "%s" & " --args %s"\n' "$CFT_APP" "$LAUNCHER_ARGS"; }
 plat_launcher_check() {
   if [ ! -d "$LAUNCHER" ]; then report MISSING launcher "$LAUNCHER"
   elif [ ! -f "$LAUNCHER/Contents/Resources/sbm-launcher.applescript" ] || ! diff -q "$LAUNCHER/Contents/Resources/sbm-launcher.applescript" <(launcher_script) >/dev/null; then report DRIFT launcher "$LAUNCHER differs from template"

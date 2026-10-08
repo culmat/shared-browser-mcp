@@ -33,6 +33,13 @@ if command -v bunx >/dev/null 2>&1; then launcher=bunx
 elif command -v npx >/dev/null 2>&1; then launcher=npx
 else log "Neither bunx nor npx found"; exit 1; fi
 
+# Prefix that runs MCP in its own process group, so `kill -- -$mcp_pid` takes down the whole
+# npx/bunx tree. Must stay an inline prefix (not a function): a function would add a subshell
+# and $! would no longer be the group leader. setsid is util-linux only; macOS falls back to
+# perl's setpgrp, which keeps the same pid across exec.
+if command -v setsid >/dev/null 2>&1; then DETACH=(setsid)
+else DETACH=(perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!\n"' --); fi
+
 mcp_pid=""
 status_pid=""
 cleanup() {
@@ -67,7 +74,7 @@ while true; do
   done
 
   log "browser reachable at ${PLAYWRIGHT_CDP_URL}; starting MCP (${PLAYWRIGHT_MCP_NPM_SPEC}) on ${PLAYWRIGHT_MCP_URL}"
-  setsid "$launcher" -y "$PLAYWRIGHT_MCP_NPM_SPEC" \
+  "${DETACH[@]}" "$launcher" -y "$PLAYWRIGHT_MCP_NPM_SPEC" \
     --cdp-endpoint "$PLAYWRIGHT_CDP_URL" \
     --host "$PLAYWRIGHT_MCP_HOST" \
     --port "$PLAYWRIGHT_MCP_PORT" \
