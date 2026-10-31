@@ -2,7 +2,7 @@
 
 This is the specification behind `shared-browser-mcp` and the fallback when the tool cannot do a step on your machine. Prefer the tool ([README](../README.md)); come here to understand what it does, or to do a step by hand.
 
-Platform status: **Windows + WSL — tested**. macOS and Linux GNOME — written from earlier, hand-applied versions of this guide, **untested** with the current layout.
+Platform status: **Windows + WSL — tested**. **Linux GNOME (Ubuntu) — tested.** macOS — written from earlier, hand-applied versions of this guide, **untested** with the current layout.
 
 ## Flow
 
@@ -100,7 +100,7 @@ do shell script "open -na '/Users/YOU/.config/playwright-mcp/chrome-for-testing/
 
 then copy `Contents/Resources/app.icns` from the browser bundle to `Browser-Playwright-MCP.app/Contents/Resources/applet.icns`.
 
-**Linux GNOME** — `~/.local/share/applications/browser-playwright-mcp.desktop`:
+**Linux GNOME** — `~/.local/share/applications/browser-playwright-mcp.desktop` (applications menu), and the same file in your desktop folder (`xdg-user-dir DESKTOP`):
 
 ```ini
 [Desktop Entry]
@@ -108,8 +108,15 @@ Name=Browser Playwright MCP
 Type=Application
 Terminal=false
 Exec=/home/YOU/.config/playwright-mcp/chrome-for-testing/current/chrome --user-data-dir=/home/YOU/.config/playwright-mcp/cft-profile --remote-debugging-port=9223 --no-first-run --no-default-browser-check --hide-crash-restore-bubble --new-window about:blank
-Icon=/home/YOU/.config/playwright-mcp/chrome-for-testing/current/product_logo_256.png
+Icon=/home/YOU/.config/playwright-mcp/chrome-for-testing/current/product_logo_48.png
 Categories=Development;
+```
+
+Use whichever `product_logo_*.png` exists in the Chrome for Testing folder — the linux64 build ships only the 48 px one. GNOME launches a `.desktop` file on the desktop only once it is executable and trusted:
+
+```bash
+chmod +x ~/Desktop/browser-playwright-mcp.desktop
+gio set ~/Desktop/browser-playwright-mcp.desktop metadata::trusted true
 ```
 
 ## Step 1b: The AUTOMATION profile
@@ -231,4 +238,4 @@ cat ~/.config/playwright-mcp/updates.log                                # update
 - Each agent session opens its own tab and nothing raises the window; hence the handoff rule.
 - The supervisor's update check needs network access to `googlechromelabs.github.io`, `storage.googleapis.com`, the npm registry and GitHub; failures are logged and ignored.
 - Chrome for Testing is unmanaged: no enterprise policies, no OS-level auto-update. The supervisor's daily check is what keeps it current.
-- macOS and Linux branches are untested with this layout.
+- The macOS branch is untested with this layout.

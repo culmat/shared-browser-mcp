@@ -72,7 +72,7 @@ shared-browser-mcp check-updates       newer Chrome for Testing / @playwright/mc
 shared-browser-mcp install-extensions  one-click install of the Web Store IDs in local.env
 ```
 
-Platform support: **Windows + WSL — tested**. macOS (`launchd`) and Linux GNOME (`systemd --user`) branches are implemented from the manual steps but **untested**; reports and fixes welcome.
+Platform support: **Windows + WSL — tested**. **Linux GNOME (`systemd --user`) — tested on Ubuntu.** macOS (`launchd`) is implemented from the manual steps but **untested**; reports and fixes welcome.
 
 Requirements: `bash`, `curl`, `python3`, `git`; `bunx` or `npx` for the MCP server; on WSL `powershell.exe` on the PATH (default). No `sudo`; everything lives under your home directory (`%LOCALAPPDATA%\PlaywrightMCP` on Windows).
 
